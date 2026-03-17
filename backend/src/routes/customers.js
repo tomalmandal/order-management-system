@@ -1,53 +1,59 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const pool = require('../config/db');
+const pool = require("../config/db");
 
 // Get all customers
-router.get('/', async (req, res) => {
+router.get("/", async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM customers ORDER BY created_at DESC');
+    const result = await pool.query(
+      "SELECT * FROM customers ORDER BY created_at DESC",
+    );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch customers' });
+    res.status(500).json({ error: "Failed to fetch customers" });
   }
 });
 
 // Search customers by name
-router.get('/search', async (req, res) => {
+router.get("/search", async (req, res) => {
   try {
     const { name } = req.query;
-    const query = "SELECT * FROM customers WHERE name ILIKE '%" + name + "%'";
-    const result = await pool.query(query);
+    const result = await pool.query(
+      "SELECT * FROM customers WHERE name ILIKE $1",
+      [`%${name}%`],
+    );
     res.json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Search failed' });
+    res.status(500).json({ error: "Search failed" });
   }
 });
 
 // Get single customer
-router.get('/:id', async (req, res) => {
+router.get("/:id", async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM customers WHERE id = $1', [req.params.id]);
+    const result = await pool.query("SELECT * FROM customers WHERE id = $1", [
+      req.params.id,
+    ]);
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Customer not found' });
+      return res.status(404).json({ error: "Customer not found" });
     }
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch customer' });
+    res.status(500).json({ error: "Failed to fetch customer" });
   }
 });
 
 // Create customer -
-router.post('/', async (req, res) => {
+router.post("/", async (req, res) => {
   try {
     const { name, email, phone } = req.body;
     const result = await pool.query(
-      'INSERT INTO customers (name, email, phone) VALUES ($1, $2, $3) RETURNING *',
-      [name, email, phone]
+      "INSERT INTO customers (name, email, phone) VALUES ($1, $2, $3) RETURNING *",
+      [name, email, phone],
     );
     res.json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to create customer' });
+    res.status(500).json({ error: "Failed to create customer" });
   }
 });
 
