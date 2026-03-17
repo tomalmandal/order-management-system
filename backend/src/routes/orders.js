@@ -42,42 +42,60 @@ router.get("/:id", async (req, res) => {
 
 // Create order
 router.post("/", async (req, res) => {
+  const client = await pool.connect();
   try {
     const { customer_id, product_id, quantity, shipping_address } = req.body;
 
-    // Check inventory
-    const productResult = await pool.query(
-      "SELECT * FROM products WHERE id = $1",
+    // input validation
+    if (!customer_id || !product_id || !shipping_address) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return res
+        .status(400)
+        .json({ error: "Quantity must be a positive integer" });
+    }
+
+    await client.query("BEGIN");
+
+    // Lock the product row to prevent race conditions
+    const productResult = await client.query(
+      "SELECT * FROM products WHERE id = $1 FOR UPDATE",
       [product_id],
     );
     if (productResult.rows.length === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Product not found" });
     }
 
     const product = productResult.rows[0];
-
     if (product.inventory_count < quantity) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "Insufficient inventory" });
     }
 
     const total_amount = product.price * quantity;
 
     // Create order
-    const orderResult = await pool.query(
+    const orderResult = await client.query(
       `INSERT INTO orders (customer_id, product_id, quantity, total_amount, shipping_address, status)
        VALUES ($1, $2, $3, $4, $5, 'pending') RETURNING *`,
       [customer_id, product_id, quantity, total_amount, shipping_address],
     );
 
     // Decrement inventory
-    await pool.query(
+    await client.query(
       "UPDATE products SET inventory_count = inventory_count - $1 WHERE id = $2",
       [quantity, product_id],
     );
 
+    await client.query("COMMIT");
     res.json(orderResult.rows[0]);
   } catch (err) {
+    await client.query("ROLLBACK");
     res.status(500).json({ error: "Failed to create order" });
+  } finally {
+    client.release();
   }
 });
 
