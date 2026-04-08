@@ -1,108 +1,173 @@
-# SDE-1 Full Stack Assignment — Order Management System
+# Order Management System
 
-## Overview
+A full-stack order management web app built with **React**, **Node.js/Express**, and **PostgreSQL**, containerized with Docker. Supports creating orders, managing order lifecycle, real-time inventory tracking, and order cancellation with automatic stock rollback.
 
-This is a small order management application with a **React** frontend, **Node.js/Express** API, and **PostgreSQL** database. The app allows you to view orders, create new orders, and search customers.
+---
 
-The codebase is functional but has **several bugs, security issues, and architectural problems**. Your job is to find them, fix the critical ones, extend the app with a new feature, and improve the deployment setup.
+## Features
+
+- **Order Management** - View, create, and manage orders with sortable columns (ID, quantity, amount, date)
+- **Order Cancellation** - Cancel `pending` or `confirmed` orders with a confirmation dialog; automatically restores product inventory in the same DB transaction
+- **Inventory Tracking** - Inventory is decremented on order creation and restored on cancellation, both within atomic transactions to prevent race conditions
+- **Customer Search** - Search customers by name with a parameterized ILIKE query (SQL injection safe)
+- **Status Workflow** - Orders move through `pending → confirmed → shipped → delivered`; shipped/delivered orders are locked from cancellation
+- **Create Order Flow** - Select customer, product (with live price and stock preview), quantity, and shipping address; button disables during submission to prevent duplicate orders
+
+---
+
+## Tech Stack
+
+| Layer | Tech |
+|---|---|
+| Frontend | React (CRA), vanilla CSS |
+| Backend | Node.js, Express |
+| Database | PostgreSQL 15 |
+| Infra | Docker, Docker Compose |
+
+---
+
+## Architecture
+
+```
+┌─────────────────┐     HTTP      ┌──────────────────────┐     SQL      ┌──────────────┐
+│  React Frontend │ ───────────▶  │  Express REST API     │ ──────────▶  │  PostgreSQL  │
+│   :3000         │               │  :3001/api            │              │  :5432       │
+└─────────────────┘               └──────────────────────┘              └──────────────┘
+```
+
+**API Routes:**
+
+```
+GET    /api/orders              - list all orders (JOIN with customers + products)
+GET    /api/orders/:id          - single order
+POST   /api/orders              - create order (transaction: insert + decrement inventory)
+PATCH  /api/orders/:id/status   - update order status
+PATCH  /api/orders/:id/cancel   - cancel order (transaction: update status + restore inventory)
+
+GET    /api/customers           - list all customers
+GET    /api/customers/search    - search by name (?name=)
+GET    /api/customers/:id       - single customer
+POST   /api/customers           - create customer
+
+GET    /api/products            - list all products
+GET    /api/products/:id        - single product
+PATCH  /api/products/:id/inventory - update inventory count
+
+GET    /api/health              - health check
+```
+
+---
+
+## Key Implementation Details
+
+### Transactional Order Creation
+Order creation uses `BEGIN/COMMIT/ROLLBACK` with `SELECT ... FOR UPDATE` to lock the product row during the inventory check. This prevents the race condition where two concurrent requests both pass the stock check and oversell the last item.
+
+```js
+await client.query('BEGIN');
+const product = await client.query('SELECT * FROM products WHERE id = $1 FOR UPDATE', [product_id]);
+// check inventory...
+await client.query('INSERT INTO orders ...');
+await client.query('UPDATE products SET inventory_count = inventory_count - $1 ...', [quantity]);
+await client.query('COMMIT');
+```
+
+### Order Cancellation with Inventory Rollback
+Cancellation is also fully transactional - the status update and inventory restore happen atomically. If either fails, both roll back.
+
+```js
+// Only pending/confirmed can be cancelled
+if (!['pending', 'confirmed'].includes(order.status)) {
+  return res.status(400).json({ error: `Order cannot be cancelled: already ${order.status}` });
+}
+// Restore inventory + update status in one transaction
+```
+
+### N+1 Query Elimination
+The orders list endpoint uses a single JOIN query instead of firing separate customer and product queries per row - keeps the list fast regardless of order count.
 
 ---
 
 ## Getting Started
 
+**Prerequisites:** Docker and Docker Compose
+
 ```bash
+git clone https://github.com/tomalmandal/Assignment-1.git
+cd Assignment-1
 docker compose up --build
 ```
 
-- **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:3001/api
-- **Database**: PostgreSQL on port 5432 (user: `admin`, password: `admin123`, db: `orderdb`)
+| Service | URL |
+|---|---|
+| Frontend | http://localhost:3000 |
+| Backend API | http://localhost:3001/api |
+| Health check | http://localhost:3001/api/health |
+| PostgreSQL | localhost:5432 |
 
-The database is seeded with sample customers, products, and orders.
+The database auto-seeds with sample customers, products, and orders on first boot.
 
----
+### Custom Credentials
 
-## Your Tasks
+Create a `.env` file in the project root:
 
-### Task 1: Bug Report (Document)
+```env
+DB_USER=myuser
+DB_PASSWORD=mypassword
+DB_NAME=mydb
+```
 
-Review the entire codebase — backend, frontend, and infrastructure. Find at least **5 issues** (bugs, security vulnerabilities, performance problems, or bad practices).
-
-For each issue, write:
-- **What** the issue is
-- **Where** it is in the code (file + line or function)
-- **Why** it matters (impact — security, performance, correctness, reliability)
-- **How** you would fix it
-
-Submit this as a `BUG_REPORT.md` file in the repo root.
-
-### Task 2: Fix Critical Issues
-
-Fix the following from your bug report (or any three critical issues you identified):
-1. The most serious **security vulnerability** you found
-2. The most impactful **performance issue**
-3. Any **data integrity / correctness** bug
-
-Commit each fix separately with a clear commit message explaining the fix.
-
-### Task 3: Build a Feature — Order Cancellation
-
-Add the ability to **cancel an order** with the following requirements:
-
-- New API endpoint to cancel an order
-- An order can only be cancelled if its status is `pending` or `confirmed`
-- Orders that are `shipped` or `delivered` **cannot** be cancelled
-- When an order is cancelled, the product inventory must be **restored** (rolled back)
-- Add a "Cancel" button in the frontend order list for eligible orders
-- Show a confirmation dialog before cancelling
-- Handle errors gracefully on both frontend and backend
-
-### Task 4: Improve Deployment (Pick One)
-
-Choose **one** of the following:
-
-**Option A:** Add a GitHub Actions CI pipeline (`.github/workflows/ci.yml`) that runs on pull requests and performs:
-- Linting (add ESLint to the backend)
-- A basic health check test against the containerized app
-
-**Option B:** Improve the Dockerfiles and docker-compose.yml to be more production-ready. Document what you changed and why in a `DEPLOYMENT.md` file.
+Docker Compose picks these up automatically.
 
 ---
 
-## Submission
+## Docker Setup
 
-1. Fork this repo (you should already have access to a private fork)
-2. Create a branch named `solution/<your-name>`
-3. Commit your work with clear, descriptive commit messages
-4. Open a Pull Request against `main`
-
-Your PR should include:
-- `BUG_REPORT.md`
-- Fixes with separate commits
-- The cancellation feature
-- Your deployment improvement (Option A or B)
-- Any optional `DEPLOYMENT.md` or other docs you want to include
+- **Alpine images** - `node:18-alpine` and `postgres:15-alpine` keep image sizes minimal (~180MB vs ~1GB)
+- **Layer cache optimization** - `package.json` is copied and `npm install` runs before copying source, so dependency installs are cached unless `package.json` changes
+- **Multi-stage frontend build** - Stage 1 builds the React app, Stage 2 serves compiled static files via `serve`. No build tools or `node_modules` in the final image
+- **DB health check** - Backend waits for `pg_isready` before starting, preventing crash-on-boot from early connection attempts
+- **Restart policy** - All services use `restart: unless-stopped` for automatic recovery
 
 ---
 
-## Evaluation Criteria
+## Project Structure
 
-We're looking for:
-- **Code reading ability**: Can you identify real problems in existing code?
-- **Judgment**: Do you prioritize the right issues?
-- **Implementation quality**: Are your fixes correct and clean?
-- **Communication**: Can you explain technical issues clearly?
-- **Practical thinking**: Does your code work in the real world (error handling, edge cases)?
-
-We are **not** looking for:
-- Rewriting the entire app from scratch
-- Adding unnecessary libraries or frameworks
-- Over-engineering the solution
+```
+├── backend/
+│   ├── src/
+│   │   ├── config/db.js          # PostgreSQL pool (env-based config)
+│   │   ├── routes/orders.js      # Order CRUD + cancel endpoint
+│   │   ├── routes/customers.js   # Customer CRUD + search
+│   │   ├── routes/products.js    # Product CRUD + inventory update
+│   │   └── index.js              # Express app + error handler
+│   ├── Dockerfile
+│   └── package.json
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── OrderList.js      # Orders table with cancel + sort
+│   │   │   ├── CreateOrder.js    # Order creation form
+│   │   │   └── CustomerSearch.js # Customer search UI
+│   │   ├── api/index.js          # Axios API calls
+│   │   └── App.js                # Tab navigation
+│   ├── Dockerfile
+│   └── package.json
+├── db/
+│   └── init.sql                  # Schema + seed data
+├── docker-compose.yml
+└── BUG_REPORT.md
+```
 
 ---
 
-## Timeline
+## Database Schema
 
-You have **4 days** from receiving this repo. If you need more time, let us know — we'd rather see quality work than rushed code.
+```sql
+customers   (id, name, email, phone, created_at)
+products    (id, name, description, price, inventory_count, created_at)
+orders      (id, customer_id, product_id, quantity, total_amount,
+             status, shipping_address, created_at, updated_at)
+```
 
-Good luck!
+Order status values: `pending | confirmed | shipped | delivered | cancelled`
